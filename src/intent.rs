@@ -1,0 +1,329 @@
+//! The launcher-facing projection: what a control *means* to an interface.
+//!
+//! ADR-0006 decision 2 defines two projections over one abstract pad. This is
+//! the first — navigation intent, consumed by the launcher and by every system
+//! screen. The other, RetroPad, arrives with `ranortv-emu`.
+//!
+//! # Why this is not `focus::Action`
+//!
+//! It is deliberately a separate type from the launcher's `focus::Action`,
+//! even though the variants line up. `ranortv-emu` will use this crate too,
+//! and a crate that both consumers depend on must not carry one consumer's UI
+//! vocabulary. The launcher converts, in one place, cheaply.
+//!
+//! # Why confirm accepts two positions
+//!
+//! Spike I1 measured the primary action button reporting as **east** on
+//! Nintendo-layout pads and **south** on Xbox-layout ones — not a database
+//! fault, but the layouts genuinely disagreeing about which position means
+//! "confirm". Until a layout is known (ADR-0006 decision 8, stage 4), the only
+//! choice that works on every pad is to accept both.
+//!
+//! The cost is that neither position is free to mean "back", which is why
+//! [`Button::Select`] carries it for now. That is an interim, and the layout
+//! wizard is what replaces it.
+
+use crate::pad::{Axis, Button, Pad};
+
+/// A navigation intent, already independent of which control produced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Intent {
+    Up,
+    Down,
+    Left,
+    Right,
+    Select,
+    Back,
+    TabPrev,
+    TabNext,
+}
+
+impl Intent {
+    /// The name the launcher's UI already uses for this action.
+    ///
+    /// Strings rather than a shared enum because `AppWindow.slint` funnels
+    /// every key press through one `navigate(string)` callback, and
+    /// `navigation::parse_action` turns those names into actions. Reusing that
+    /// path means controller input reaches the focus model by exactly the
+    /// route a key press does, which is the convention `main.rs` already
+    /// follows for mouse clicks.
+    pub fn as_name(self) -> &'static str {
+        match self {
+            Intent::Up => "up",
+            Intent::Down => "down",
+            Intent::Left => "left",
+            Intent::Right => "right",
+            Intent::Select => "select",
+            Intent::Back => "back",
+            Intent::TabPrev => "tab_prev",
+            Intent::TabNext => "tab_next",
+        }
+    }
+}
+
+/// Past this much deflection a stick counts as a direction held.
+///
+/// Generous on purpose. A stick has to be pushed deliberately to move focus,
+/// and I1 measured every pad resting at centre, so there is room between
+/// "resting" and "meant it".
+const STICK_THRESHOLD: f32 = 0.6;
+
+/// Below this, a stick has returned far enough to be pushed again.
+///
+/// Lower than the trigger point, so a stick wavering around one value cannot
+/// emit a stream of intents. Without the gap, resting *at* the threshold
+/// produces exactly the runaway the wizard's neutral check exists to prevent.
+const STICK_RELEASE: f32 = 0.4;
+
+/// Turns pad state into intents, remembering enough to fire on edges only.
+///
+/// Intents are emitted when a control becomes active, never while it stays
+/// active. Holding a direction therefore moves focus once. Auto-repeat is a
+/// later stage: it needs a clock, and this stays a pure function of state so
+/// it can be tested against recorded streams without one.
+#[derive(Debug, Default)]
+pub struct Intents {
+    held: Vec<(Button, bool)>,
+    stick: [i8; 2],
+}
+
+impl Intents {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Intents implied by the difference between the last pad state and this
+    /// one, in a stable order.
+    pub fn update(&mut self, pad: &Pad) -> Vec<Intent> {
+        let mut out = Vec::new();
+
+        for (button, intent) in BUTTONS {
+            let now = pad.pressed(button);
+            let was = self.was(button);
+            if now && !was {
+                out.push(intent);
+            }
+            self.set(button, now);
+        }
+
+        // A stick is a direction only when pushed past the threshold, and
+        // re-arms once it comes back. Both axes are independent so a diagonal
+        // push emits both, which the focus model handles as two moves.
+        for (slot, (axis, neg, pos)) in [
+            (Axis::LeftX, Intent::Left, Intent::Right),
+            (Axis::LeftY, Intent::Up, Intent::Down),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let value = pad.axis(axis);
+            let was = self.stick[slot];
+            let now = if value >= STICK_THRESHOLD {
+                1
+            } else if value <= -STICK_THRESHOLD {
+                -1
+            } else if value.abs() <= STICK_RELEASE {
+                0
+            } else {
+                was
+            };
+            if now != was {
+                match now {
+                    // Vertical sticks report positive as down, matching evdev,
+                    // so the positive intent is Down rather than Up.
+                    1 => out.push(pos),
+                    -1 => out.push(neg),
+                    _ => {}
+                }
+                self.stick[slot] = now;
+            }
+        }
+
+        out
+    }
+
+    fn was(&self, button: Button) -> bool {
+        self.held
+            .iter()
+            .find(|(b, _)| *b == button)
+            .map(|(_, held)| *held)
+            .unwrap_or(false)
+    }
+
+    fn set(&mut self, button: Button, held: bool) {
+        if let Some(entry) = self.held.iter_mut().find(|(b, _)| *b == button) {
+            entry.1 = held;
+        } else {
+            self.held.push((button, held));
+        }
+    }
+}
+
+/// Buttons that carry an intent, and what each means.
+///
+/// `FaceSouth` and `FaceEast` both confirm — see the module docs. `Guide` is
+/// deliberately absent: I1 found the N64 pad reporting Start as `Mode`, so a
+/// Guide binding cannot be trusted before a layout is known, which is the
+/// same evidence that moved ADR-0006 decision 10 to a deliberate hold.
+///
+/// `Home` has no controller binding yet for the same reason, and the keyboard
+/// keeps it — decision 9 requires that a controller is never the only way in.
+///
+/// `Start` is absent too, and deliberately: it is half of decision 10's
+/// reserved exit binding, and confirm is already covered by both face
+/// positions, so binding it would add ambiguity and no capability.
+const BUTTONS: [(Button, Intent); 9] = [
+    (Button::DpadUp, Intent::Up),
+    (Button::DpadDown, Intent::Down),
+    (Button::DpadLeft, Intent::Left),
+    (Button::DpadRight, Intent::Right),
+    (Button::FaceSouth, Intent::Select),
+    (Button::FaceEast, Intent::Select),
+    (Button::Select, Intent::Back),
+    (Button::ShoulderLeft, Intent::TabPrev),
+    (Button::ShoulderRight, Intent::TabNext),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device::{DeviceId, DeviceInfo, MappingSource, ModelId};
+    use crate::pad::Devices;
+    use crate::source::Event;
+
+    fn devices() -> Devices {
+        let mut d = Devices::new();
+        d.apply(Event::Connected {
+            id: DeviceId(0),
+            info: DeviceInfo {
+                name: "pad".into(),
+                model: ModelId([0; 16]),
+                mapping: MappingSource::Sdl,
+            },
+        });
+        d
+    }
+
+    fn press(d: &mut Devices, button: Button, pressed: bool) {
+        d.apply(Event::Button {
+            id: DeviceId(0),
+            button,
+            pressed,
+        });
+    }
+
+    fn axis(d: &mut Devices, axis: Axis, value: f32) {
+        d.apply(Event::Axis {
+            id: DeviceId(0),
+            axis,
+            value,
+        });
+    }
+
+    #[test]
+    fn a_button_fires_once_on_press_not_while_held() {
+        let mut d = devices();
+        let mut i = Intents::new();
+        press(&mut d, Button::DpadDown, true);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::Down]);
+        // Still held, second poll: nothing new.
+        assert!(i.update(d.pad(DeviceId(0)).unwrap()).is_empty());
+        press(&mut d, Button::DpadDown, false);
+        assert!(i.update(d.pad(DeviceId(0)).unwrap()).is_empty());
+        press(&mut d, Button::DpadDown, true);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::Down]);
+    }
+
+    #[test]
+    fn both_face_positions_confirm_because_layouts_disagree() {
+        // I1 measured the primary button at east on Nintendo-layout pads and
+        // south on Xbox-layout ones. Until the layout is known, both.
+        for button in [Button::FaceSouth, Button::FaceEast] {
+            let mut d = devices();
+            let mut i = Intents::new();
+            press(&mut d, button, true);
+            assert_eq!(
+                i.update(d.pad(DeviceId(0)).unwrap()),
+                vec![Intent::Select],
+                "{button:?} should confirm"
+            );
+        }
+    }
+
+    #[test]
+    fn the_guide_button_carries_no_intent() {
+        // I1 found the N64 pad reporting Start as Mode, so Guide is not
+        // trustworthy before a layout is known.
+        let mut d = devices();
+        let mut i = Intents::new();
+        press(&mut d, Button::Guide, true);
+        assert!(i.update(d.pad(DeviceId(0)).unwrap()).is_empty());
+    }
+
+    #[test]
+    fn shoulders_switch_tabs() {
+        let mut d = devices();
+        let mut i = Intents::new();
+        press(&mut d, Button::ShoulderRight, true);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::TabNext]);
+        press(&mut d, Button::ShoulderLeft, true);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::TabPrev]);
+    }
+
+    #[test]
+    fn a_stick_pushed_and_released_fires_once_each_way() {
+        let mut d = devices();
+        let mut i = Intents::new();
+        axis(&mut d, Axis::LeftX, 0.9);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::Right]);
+        // Held past the threshold: no repeat.
+        axis(&mut d, Axis::LeftX, 0.95);
+        assert!(i.update(d.pad(DeviceId(0)).unwrap()).is_empty());
+        // Back to centre re-arms, then push the other way.
+        axis(&mut d, Axis::LeftX, 0.0);
+        assert!(i.update(d.pad(DeviceId(0)).unwrap()).is_empty());
+        axis(&mut d, Axis::LeftX, -0.9);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::Left]);
+    }
+
+    #[test]
+    fn a_stick_resting_between_the_thresholds_does_not_chatter() {
+        // The hysteresis gap exists for exactly this: a worn stick sitting
+        // near the trigger point must not emit a stream of intents.
+        let mut d = devices();
+        let mut i = Intents::new();
+        axis(&mut d, Axis::LeftY, 0.7);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::Down]);
+        for v in [0.55, 0.5, 0.58, 0.52] {
+            axis(&mut d, Axis::LeftY, v);
+            assert!(
+                i.update(d.pad(DeviceId(0)).unwrap()).is_empty(),
+                "value {v} should not re-fire"
+            );
+        }
+    }
+
+    #[test]
+    fn every_intent_has_a_name_the_launcher_parses() {
+        // The names must match navigation::parse_action, which is a separate
+        // crate and cannot be checked by the compiler.
+        let expected = [
+            "up", "down", "left", "right", "select", "back", "tab_prev", "tab_next",
+        ];
+        for intent in [
+            Intent::Up,
+            Intent::Down,
+            Intent::Left,
+            Intent::Right,
+            Intent::Select,
+            Intent::Back,
+            Intent::TabPrev,
+            Intent::TabNext,
+        ] {
+            assert!(
+                expected.contains(&intent.as_name()),
+                "{intent:?} produced an unexpected name"
+            );
+        }
+    }
+}

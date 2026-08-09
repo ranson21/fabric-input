@@ -35,6 +35,7 @@
 
 mod device;
 mod error;
+mod intent;
 mod pad;
 mod source;
 mod synthetic;
@@ -44,6 +45,7 @@ mod gilrs_backend;
 
 pub use device::{DeviceId, DeviceInfo, MappingSource, ModelId};
 pub use error::Error;
+pub use intent::{Intent, Intents};
 pub use pad::{Axis, Button, Devices, Pad};
 pub use source::{Event, EventSource};
 pub use synthetic::Synthetic;
