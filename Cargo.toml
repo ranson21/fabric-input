@@ -1,0 +1,27 @@
+[package]
+name = "ranortv-input"
+description = "Controller discovery and the abstract pad for RanorTV OS. See docs/adr/0006."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+
+# Optional, and off by default. gilrs pulls in libudev-sys, whose build script
+# probes pkg-config at *configure* time, so enabling it by default would make
+# every workspace build — including CI's — require libudev headers that
+# nothing needs yet. ADR-0001 records the same lesson from the kms feature:
+# "needs no system packages" is not observable on a machine that has them.
+#
+# Turned on when the launcher starts consuming this crate, which is the change
+# that should also add the CI dependency, deliberately and visibly.
+gilrs = { version = "0.11", optional = true }
+
+[features]
+default = []
+gilrs-backend = ["dep:gilrs"]
