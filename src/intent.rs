@@ -172,7 +172,21 @@ impl Intents {
 /// `Start` is absent too, and deliberately: it is half of decision 10's
 /// reserved exit binding, and confirm is already covered by both face
 /// positions, so binding it would add ambiguity and no capability.
-const BUTTONS: [(Button, Intent); 9] = [
+///
+/// # Pads without two shoulders
+///
+/// A Mega Drive-style pad has **one** shoulder; some retro pads have none.
+/// Such a pad gets one tab direction, or neither, and that asymmetry cannot
+/// be resolved here: which of the two a single shoulder maps to is decided by
+/// the controller database, and this layer does not know the pad's shape.
+/// Knowing it is exactly what ADR-0006 decision 8's layout wizard is for.
+///
+/// It is a limitation rather than a trap. **Tab switching never depends on a
+/// shoulder**: `Up` from the content reaches the tab bar and `Left`/`Right`
+/// move along it, on every pad, including one with no shoulders at all.
+/// Binding the triggers as well widens the coverage without making any pad
+/// worse.
+const BUTTONS: [(Button, Intent); 11] = [
     (Button::DpadUp, Intent::Up),
     (Button::DpadDown, Intent::Down),
     (Button::DpadLeft, Intent::Left),
@@ -182,6 +196,11 @@ const BUTTONS: [(Button, Intent); 9] = [
     (Button::Select, Intent::Back),
     (Button::ShoulderLeft, Intent::TabPrev),
     (Button::ShoulderRight, Intent::TabNext),
+    // Triggers carry the same intents, so a pad whose single shoulder the
+    // database happens to map as a trigger still switches tabs. See the note
+    // on pads that do not have two shoulders.
+    (Button::TriggerLeft, Intent::TabPrev),
+    (Button::TriggerRight, Intent::TabNext),
 ];
 
 #[cfg(test)]
@@ -300,6 +319,47 @@ mod tests {
                 i.update(d.pad(DeviceId(0)).unwrap()).is_empty(),
                 "value {v} should not re-fire"
             );
+        }
+    }
+
+    #[test]
+    fn triggers_switch_tabs_too_so_a_one_shoulder_pad_has_a_chance() {
+        // A Mega Drive-style pad has one shoulder, and which of the pair the
+        // database maps it to is not ours to choose. Binding the triggers as
+        // well widens coverage without changing anything for a pad that has
+        // both shoulders.
+        for (button, expected) in [
+            (Button::TriggerLeft, Intent::TabPrev),
+            (Button::TriggerRight, Intent::TabNext),
+        ] {
+            let mut d = devices();
+            let mut i = Intents::new();
+            press(&mut d, button, true);
+            assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![expected]);
+        }
+    }
+
+    #[test]
+    fn a_pad_with_no_shoulders_can_still_reach_every_tab() {
+        // The limitation is asymmetric convenience, not a dead end: Up
+        // reaches the tab bar and Left/Right move along it. This asserts the
+        // intents exist on a pad that only has a d-pad, which is what makes
+        // the shoulder bindings optional rather than load-bearing.
+        let mut d = devices();
+        let mut i = Intents::new();
+        for (button, expected) in [
+            (Button::DpadUp, Intent::Up),
+            (Button::DpadLeft, Intent::Left),
+            (Button::DpadRight, Intent::Right),
+        ] {
+            press(&mut d, button, true);
+            assert_eq!(
+                i.update(d.pad(DeviceId(0)).unwrap()),
+                vec![expected],
+                "{button:?} must work without any shoulder present"
+            );
+            press(&mut d, button, false);
+            i.update(d.pad(DeviceId(0)).unwrap());
         }
     }
 
