@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Job names here are the required status check contexts in this repository's
+# Terraform, which lives in ranor-fabric at
+# environments/global/repos/fabric-input. Renaming a job renames a context, and
+# a required context that nothing produces blocks every pull request. Change
+# both together.
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # gilrs links libudev rather than dlopen'ing it, so --all-features needs
+      # the headers. The default feature set does not, which is the whole point
+      # of the gilrs-backend feature being off by default — but CI checking
+      # only the default set would never compile gilrs_backend.rs at all.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-features --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev
+      - uses: Swatinem/rust-cache@v2
+      # Not --locked. Cargo.lock is untracked here, as it should be for a
+      # library: the lock that matters is the consuming product's, and pinning
+      # one here would only hide a resolution failure until a product hit it.
+      - run: cargo test --all-features
