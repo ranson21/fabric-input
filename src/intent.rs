@@ -2,12 +2,12 @@
 //!
 //! ADR-0006 decision 2 defines two projections over one abstract pad. This is
 //! the first — navigation intent, consumed by the launcher and by every system
-//! screen. The other, RetroPad, arrives with `ranortv-emu`.
+//! screen. The other, RetroPad, arrives with `apex-emu`.
 //!
 //! # Why this is not `focus::Action`
 //!
 //! It is deliberately a separate type from the launcher's `focus::Action`,
-//! even though the variants line up. `ranortv-emu` will use this crate too,
+//! even though the variants line up. `apex-emu` will use this crate too,
 //! and a crate that both consumers depend on must not carry one consumer's UI
 //! vocabulary. The launcher converts, in one place, cheaply.
 //!

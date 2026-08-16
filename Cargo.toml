@@ -1,27 +1,35 @@
 [package]
-name = "ranortv-input"
-description = "Controller discovery and the abstract pad for RanorTV OS. See docs/adr/0006."
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-authors.workspace = true
+name        = "fabric-input"
+description = "Controller discovery and the abstract pad for RaNor Fabric. See ranortv-os docs/adr/0006."
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR Apache-2.0"
+repository  = "https://github.com/ranson21/fabric-input"
+authors     = ["Abigail Ranson <abby@abbyranson.com>"]
+
+# The metadata above was inherited from ranortv-os's workspace — version,
+# edition, licence, repository and authors were all `*.workspace = true`. A
+# standalone crate has no workspace to inherit from, so the values are written
+# out. They are the same values, not new ones, except `repository`, which now
+# points at where this crate actually lives.
 publish = false
 
 [dependencies]
-thiserror.workspace = true
-tracing.workspace = true
+# Also previously workspace-inherited. The versions match what ranortv-os
+# pinned, so this extraction changes no dependency.
+thiserror = "2"
+tracing   = "0.1"
 
 # Optional, and off by default. gilrs pulls in libudev-sys, whose build script
 # probes pkg-config at *configure* time, so enabling it by default would make
-# every workspace build — including CI's — require libudev headers that
-# nothing needs yet. ADR-0001 records the same lesson from the kms feature:
-# "needs no system packages" is not observable on a machine that has them.
+# every build — including CI's — require libudev headers that nothing needs
+# yet. ADR-0001 records the same lesson from the kms feature: "needs no system
+# packages" is not observable on a machine that has them.
 #
-# Turned on when the launcher starts consuming this crate, which is the change
-# that should also add the CI dependency, deliberately and visibly.
+# The launcher turns it on at its call site, which is where the CI dependency
+# is declared alongside it, deliberately and visibly.
 gilrs = { version = "0.11", optional = true }
 
 [features]
-default = []
+default       = []
 gilrs-backend = ["dep:gilrs"]

@@ -33,7 +33,7 @@ pub enum Event {
 /// A source of [`Event`]s, drained by the caller.
 ///
 /// Pull-based on purpose. Both consumers already own a loop with different
-/// timing needs — the launcher a UI event loop, `ranortv-emu` a frame loop —
+/// timing needs — the launcher a UI event loop, `apex-emu` a frame loop —
 /// so a source that pushed, or that owned a thread, would make each inherit
 /// the other's scheduling.
 pub trait EventSource {

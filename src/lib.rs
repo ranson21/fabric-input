@@ -3,7 +3,7 @@
 //! This crate sits below both consumers described in
 //! [ADR-0006](../../../docs/adr/0006-input-and-controller-mapping.md): the
 //! launcher, which needs a controller to drive the interface, and
-//! `ranortv-emu`, which needs one to drive a core. It is a **system** crate
+//! `apex-emu`, which needs one to drive a core. It is a **system** crate
 //! for that reason, not an emulation one.
 //!
 //! # Scope
@@ -17,7 +17,7 @@
 //! **It does not depend on the launcher.** ADR-0006 decision 2 describes the
 //! launcher-facing projection in terms of `focus::Action`, but that type
 //! belongs to the launcher's focus model. This crate emits its own
-//! vocabulary and the launcher converts, so `ranortv-emu` can use the same
+//! vocabulary and the launcher converts, so `apex-emu` can use the same
 //! crate without inheriting a UI type.
 //!
 //! **It does not expose its backend.** ADR-0006 decision 4's amendment says
@@ -30,7 +30,7 @@
 //!
 //! [`EventSource::poll`] is pull-based and this crate owns no thread. Both
 //! consumers already have a loop with different timing needs — the launcher a
-//! UI event loop, `ranortv-emu` a frame loop — and a thread here would make
+//! UI event loop, `apex-emu` a frame loop — and a thread here would make
 //! each inherit the other's scheduling.
 
 mod device;

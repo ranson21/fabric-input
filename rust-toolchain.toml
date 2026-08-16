@@ -1,0 +1,20 @@
+# Pinned toolchain. Copied from ranortv-os, where this crate was born, and
+# kept identical on purpose: two products consume this crate, and a Fabric
+# component compiling under a different compiler than the products that embed
+# it is a difference nobody chose.
+#
+# Pinned to an exact version rather than "stable" so that CI, contributors and
+# release builds all use the same compiler.
+#
+# Note: this pin is for determinism, NOT to avoid a broken compiler. See
+# ranortv-os docs/adr/0001-toolchain-and-slint-backend.md for the full
+# reasoning, including the ICE that turned out to be a snap glibc collision
+# rather than a compiler fault.
+#
+# Changing this version is a Fabric-wide decision. Raise it here and in the
+# consuming repositories together, or their CI diverges from this one silently.
+[toolchain]
+channel = "1.92.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-gnu"]
