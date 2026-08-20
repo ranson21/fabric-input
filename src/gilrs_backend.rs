@@ -21,6 +21,58 @@ use crate::source::{Event, EventSource};
 /// reached by any real press, since hats report full deflection or nothing.
 const HAT_THRESHOLD: f32 = 0.5;
 
+/// Corrected SDL mappings for pads the bundled database gets wrong.
+///
+/// One entry so far. A generic DragonRise board (USB `0079:0011`), sold in
+/// Mega Drive and Saturn shaped cases, is matched by the SDL database as a
+/// "Sega Saturn" pad. That entry is correct SDL — it maps the d-pad as two
+/// half-axis pairs, `dpup:-a1, dpdown:+a1, dpleft:-a0, dpright:+a0` — and
+/// gilrs collapses each pair into ONE full-range analog button and drops the
+/// other half. Measured on the pad: only `DPadUp` and `DPadRight` ever arrive,
+/// and pressing down or left emits **nothing at all**. Two of four directions
+/// simply do not exist, which no amount of interpretation downstream can
+/// recover.
+///
+/// So the same axes are mapped as a stick instead. gilrs then delivers them
+/// across their full travel — measured at +0.991 up, -1.000 down, -0.991 left,
+/// +1.000 right — and the stick path already turns deflection into directions
+/// in both signs.
+///
+/// The button assignments are carried over from the bundled entry unchanged.
+/// They are wrong for a six-button pad — C and Z both land on a shoulder — but
+/// that is a different problem: no rule recovers a physical layout from a
+/// mistaken one, which is what ADR-0006 section 8's wizard exists for. Fixing
+/// the directions without pretending to fix the faces is the honest half.
+const MAPPING_OVERRIDES: &str = "\
+03000000790000001100000011010000,Sega Saturn,\
+a:b1,b:b2,x:b0,y:b3,\
+leftshoulder:b6,lefttrigger:b7,rightshoulder:b5,righttrigger:b4,\
+back:b8,start:b9,leftx:a0,lefty:a1,platform:Linux,";
+
+/// Applies [`MAPPING_OVERRIDES`], by the only route that actually wins.
+///
+/// gilrs inserts mappings into one table keyed by GUID, in this order at
+/// build time: the builder's own `add_mappings`, then the bundled database,
+/// then `SDL_GAMECONTROLLERCONFIG`. Later insertions overwrite earlier ones,
+/// so anything passed to the builder is overwritten by the bundled entry that
+/// it was meant to replace — measured, not assumed: the override had no effect
+/// at all until it moved here.
+///
+/// Any existing value is kept and ours appended, so a person who has set the
+/// variable for their own pad does not lose it.
+fn apply_mapping_overrides() {
+    let existing = std::env::var("SDL_GAMECONTROLLERCONFIG").unwrap_or_default();
+    let combined = if existing.is_empty() {
+        MAPPING_OVERRIDES.to_string()
+    } else {
+        format!("{existing}\n{MAPPING_OVERRIDES}")
+    };
+    // Safe here in practice and worth naming: this runs once, before any
+    // gamepad thread exists, from the constructor of the only type in this
+    // crate that talks to gilrs.
+    std::env::set_var("SDL_GAMECONTROLLERCONFIG", combined);
+}
+
 pub struct GilrsSource {
     inner: gilrs::Gilrs,
     /// gilrs' own id is opaque, so instances are numbered here. The map is
@@ -38,6 +90,7 @@ pub struct GilrsSource {
 
 impl GilrsSource {
     pub fn new() -> Result<Self, Error> {
+        apply_mapping_overrides();
         let inner = gilrs::Gilrs::new().map_err(|e| Error::Backend(e.to_string()))?;
         let mut source = Self {
             inner,
@@ -163,8 +216,8 @@ impl EventSource for GilrsSource {
                         }
                     }
                 },
-                // Analog button travel and force-feedback completions carry
-                // nothing this crate models yet.
+                // Force-feedback completions and the rest carry nothing this
+                // crate models yet.
                 _ => {}
             }
         }
@@ -224,4 +277,56 @@ fn axis(a: gilrs::Axis) -> Option<Axis> {
         // Handled by the hat path before this is reached.
         G::DPadX | G::DPadY | G::Unknown => return None,
     })
+}
+
+#[cfg(test)]
+mod mapping_overrides {
+    use super::*;
+
+    /// The override must be a mapping gilrs will actually parse: a GUID, a
+    /// name, then comma separated bindings, with the platform gilrs matches on.
+    #[test]
+    fn the_override_is_well_formed() {
+        for line in MAPPING_OVERRIDES.lines() {
+            let mut parts = line.split(',');
+            let guid = parts.next().unwrap();
+            assert_eq!(guid.len(), 32, "a GUID is 32 hex characters: {guid:?}");
+            assert!(guid.chars().all(|c| c.is_ascii_hexdigit()));
+            assert!(parts.next().is_some_and(|n| !n.is_empty()), "no name");
+            assert!(
+                line.contains("platform:Linux,"),
+                "gilrs skips any mapping whose platform is not this one"
+            );
+        }
+    }
+
+    /// All four directions, or it does not fix what it was written for.
+    ///
+    /// The bundled entry binds the d-pad as half-axis pairs and gilrs loses
+    /// one half of each, so this maps the same axes as a stick.
+    #[test]
+    fn the_override_gives_the_dpad_both_halves_of_both_axes() {
+        assert!(MAPPING_OVERRIDES.contains("leftx:a0"));
+        assert!(MAPPING_OVERRIDES.contains("lefty:a1"));
+        for half in ["dpup:", "dpdown:", "dpleft:", "dpright:"] {
+            assert!(
+                !MAPPING_OVERRIDES.contains(half),
+                "{half} is the binding gilrs mishandles; the point is to avoid it"
+            );
+        }
+    }
+
+    /// An existing value is kept. Somebody may have set this for their own pad.
+    #[test]
+    fn an_existing_configuration_is_not_thrown_away() {
+        let theirs = "0000000000000000000000000000ffff,Their Pad,a:b0,platform:Linux,";
+        std::env::set_var("SDL_GAMECONTROLLERCONFIG", theirs);
+        apply_mapping_overrides();
+
+        let now = std::env::var("SDL_GAMECONTROLLERCONFIG").unwrap();
+        assert!(now.contains(theirs), "someone else's mapping was discarded");
+        assert!(now.contains("03000000790000001100000011010000"));
+
+        std::env::remove_var("SDL_GAMECONTROLLERCONFIG");
+    }
 }
