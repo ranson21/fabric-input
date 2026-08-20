@@ -109,9 +109,25 @@ impl Intents {
         // A stick is a direction only when pushed past the threshold, and
         // re-arms once it comes back. Both axes are independent so a diagonal
         // push emits both, which the focus model handles as two moves.
+        //
+        // The pair is (negative, positive) for each axis, and the vertical one
+        // is not the way round it looks.
+        //
+        // gilrs normalises axes itself and negates LeftStickY, RightStickY and
+        // DPadY wherever `IS_Y_AXIS_REVERSED` — which is every platform this
+        // runs on. So evdev's "positive is down" has already been undone by
+        // the time a value arrives here: a raw ABS_Y of 0, the stick pushed
+        // up, reaches this loop as +1.
+        //
+        // It used to read (Up, Down), on a comment that said positive was down
+        // "matching evdev". True of evdev, not of gilrs, and the effect was a
+        // d-pad with its vertical axis inverted — pressing up moved down.
+        // Found on a Mega Drive style USB pad whose d-pad is reported as
+        // ABS_X/ABS_Y rather than as a hat, so it arrives through this path
+        // rather than the hat one.
         for (slot, (axis, neg, pos)) in [
             (Axis::LeftX, Intent::Left, Intent::Right),
-            (Axis::LeftY, Intent::Up, Intent::Down),
+            (Axis::LeftY, Intent::Down, Intent::Up),
         ]
         .into_iter()
         .enumerate()
@@ -129,8 +145,6 @@ impl Intents {
             };
             if now != was {
                 match now {
-                    // Vertical sticks report positive as down, matching evdev,
-                    // so the positive intent is Down rather than Up.
                     1 => out.push(pos),
                     -1 => out.push(neg),
                     _ => {}
@@ -311,8 +325,9 @@ mod tests {
         // near the trigger point must not emit a stream of intents.
         let mut d = devices();
         let mut i = Intents::new();
+        // Positive is up: gilrs has already undone evdev's sign by here.
         axis(&mut d, Axis::LeftY, 0.7);
-        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::Down]);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::Up]);
         for v in [0.55, 0.5, 0.58, 0.52] {
             axis(&mut d, Axis::LeftY, v);
             assert!(
@@ -385,5 +400,59 @@ mod tests {
                 "{intent:?} produced an unexpected name"
             );
         }
+    }
+
+    /// Up is up.
+    ///
+    /// This is the whole of the Sega pad bug. gilrs negates LeftStickY,
+    /// RightStickY and DPadY wherever `IS_Y_AXIS_REVERSED`, which is every
+    /// platform this runs on — so a stick pushed up arrives POSITIVE, and a
+    /// table written for evdev's convention turned it into Down.
+    ///
+    /// A pad whose d-pad is reported as ABS_X/ABS_Y rather than as a hat comes
+    /// through this path, which is why a Mega Drive style pad found it and the
+    /// recognised pads did not.
+    #[test]
+    fn pushing_up_means_up() {
+        let mut d = devices();
+        let mut i = Intents::new();
+
+        axis(&mut d, Axis::LeftY, 1.0);
+        assert_eq!(
+            i.update(d.pad(DeviceId(0)).unwrap()),
+            vec![Intent::Up],
+            "a positive Y is the stick pushed up"
+        );
+
+        axis(&mut d, Axis::LeftY, 0.0);
+        let _ = i.update(d.pad(DeviceId(0)).unwrap());
+
+        axis(&mut d, Axis::LeftY, -1.0);
+        assert_eq!(
+            i.update(d.pad(DeviceId(0)).unwrap()),
+            vec![Intent::Down],
+            "a negative Y is the stick pulled down"
+        );
+    }
+
+    /// And the horizontal axis is untouched by that fix.
+    ///
+    /// The first attempt corrected the vertical direction inside the match
+    /// shared by both axes, which inverted left and right as well. The
+    /// existing horizontal test caught it; this states the expectation rather
+    /// than relying on that.
+    #[test]
+    fn pushing_right_still_means_right() {
+        let mut d = devices();
+        let mut i = Intents::new();
+
+        axis(&mut d, Axis::LeftX, 1.0);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::Right]);
+
+        axis(&mut d, Axis::LeftX, 0.0);
+        let _ = i.update(d.pad(DeviceId(0)).unwrap());
+
+        axis(&mut d, Axis::LeftX, -1.0);
+        assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![Intent::Left]);
     }
 }

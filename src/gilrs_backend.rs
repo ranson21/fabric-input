@@ -87,8 +87,12 @@ impl GilrsSource {
         let (neg, pos) = if horizontal {
             (Button::DpadLeft, Button::DpadRight)
         } else {
-            // Vertical hats report positive as *down*, matching evdev.
-            (Button::DpadUp, Button::DpadDown)
+            // Positive is UP. gilrs negates DPadY wherever
+            // `IS_Y_AXIS_REVERSED`, which is every platform this runs on, so
+            // evdev's convention has already been undone by the time a value
+            // reaches here. The same mistake was in the stick path and had the
+            // same effect: up moved down.
+            (Button::DpadDown, Button::DpadUp)
         };
         let button_for = |v: i8| match v {
             -1 => Some(neg),
