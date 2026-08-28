@@ -189,23 +189,19 @@ impl EventSource for GilrsSource {
                     self.hats.remove(&(id, false));
                     self.pending.push_back(Event::Disconnected { id });
                 }
-                gilrs::EventType::ButtonPressed(b, _) => {
-                    if let Some(button) = button(b) {
-                        self.pending.push_back(Event::Button {
-                            id,
-                            button,
-                            pressed: true,
-                        });
-                    }
+                gilrs::EventType::ButtonPressed(b, code) => {
+                    self.pending.push_back(Event::Button {
+                        id,
+                        button: button(b).unwrap_or(Button::Other(code.into_u32())),
+                        pressed: true,
+                    });
                 }
-                gilrs::EventType::ButtonReleased(b, _) => {
-                    if let Some(button) = button(b) {
-                        self.pending.push_back(Event::Button {
-                            id,
-                            button,
-                            pressed: false,
-                        });
-                    }
+                gilrs::EventType::ButtonReleased(b, code) => {
+                    self.pending.push_back(Event::Button {
+                        id,
+                        button: button(b).unwrap_or(Button::Other(code.into_u32())),
+                        pressed: false,
+                    });
                 }
                 gilrs::EventType::AxisChanged(a, value, _) => match a {
                     gilrs::Axis::DPadX => self.hat(id, true, value),
@@ -238,9 +234,14 @@ fn describe(pad: &gilrs::Gamepad<'_>) -> DeviceInfo {
 
 /// gilrs' button vocabulary onto this crate's positional one.
 ///
-/// `C` and `Z` are dropped: they are Mega Drive-era extras with no position
-/// on the abstract pad, and inventing one would be a guess. A layout that
-/// needs them is a stage-4 problem, where the pad's type is known.
+/// `C`, `Z` and anything unrecognised return `None` here and are carried by
+/// the caller as [`Button::Other`], with the code the kernel gave them. They
+/// are Mega Drive-era extras with no position on the abstract pad, and
+/// inventing one would still be a guess — but dropping them meant a frontend
+/// that knows the pad's type could not reach them either, and an unmapped pad
+/// produced no events at all. Passing the code through leaves the guess
+/// undone while letting somebody who has asked a person what the pad is
+/// record the answer.
 fn button(b: gilrs::Button) -> Option<Button> {
     use gilrs::Button as G;
     Some(match b {
