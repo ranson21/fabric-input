@@ -45,10 +45,31 @@ pub enum Button {
     /// binding: I1 found the N64 pad reporting Start as `Mode`, which is why
     /// ADR-0006 decision 10 was amended to a deliberate hold instead.
     Guide,
+    /// A button with no position on the abstract pad, carried by the code the
+    /// kernel gave it.
+    ///
+    /// Two things arrive here. **Mega Drive-era extras** — the six-button
+    /// pad's `C` and the N64's `Z` — which have no abstract position and
+    /// which inventing one for would be a guess. And **every button of a pad
+    /// with no mapping at all**, which is the case that matters: an
+    /// unrecognised pad used to produce no events whatsoever, so a frontend
+    /// could not offer to set it up, because the screen offering to do so
+    /// could not itself be operated.
+    ///
+    /// The code is stable for a given device and is not comparable between
+    /// devices. It is meant to be recorded by something that has asked a
+    /// person what the pad is, and read back later — not interpreted.
+    Other(u32),
 }
 
 impl Button {
-    /// Every variant, so consumers can enumerate without matching by hand.
+    /// Every *positioned* variant, so consumers can enumerate without matching
+    /// by hand.
+    ///
+    /// [`Button::Other`] is deliberately absent: it carries a device's own
+    /// code and there is no finite set of those to list. Anything walking this
+    /// array is asking about the abstract pad, which is exactly the question
+    /// `Other` has no answer to.
     pub const ALL: [Button; 17] = [
         Button::FaceSouth,
         Button::FaceEast,
@@ -201,6 +222,23 @@ impl Devices {
 
 #[cfg(test)]
 mod tests {
+
+    /// A button with no abstract position keeps its own identity.
+    ///
+    /// The case this exists for is a pad with no mapping at all, which used to
+    /// produce no events whatsoever — so a frontend could not offer to set it
+    /// up, because the screen offering to do so could not be operated by the
+    /// pad it was asking about.
+    #[test]
+    fn an_unpositioned_button_is_told_apart_by_its_code() {
+        assert_ne!(Button::Other(304), Button::Other(305));
+        assert_eq!(Button::Other(304), Button::Other(304));
+
+        // And it is not one of the positioned ones, which is what keeps
+        // anything matching on the abstract pad honest.
+        assert!(!Button::ALL.contains(&Button::Other(304)));
+        assert_eq!(Button::ALL.len(), 17, "the abstract pad grew a button");
+    }
     use super::*;
     use crate::device::{MappingSource, ModelId};
 
