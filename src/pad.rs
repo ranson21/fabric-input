@@ -90,8 +90,16 @@ impl Button {
         Button::Guide,
     ];
 
-    fn index(self) -> usize {
-        Button::ALL.iter().position(|b| *b == self).unwrap_or(0)
+    /// Where this button lives in a [`Pad`]'s array, or `None` for
+    /// [`Button::Other`], which has no seat in it.
+    ///
+    /// **Was `unwrap_or(0)`, and that was the whole bug.** Seat zero is
+    /// `FaceSouth`, so every unmapped button an `Other` carried landed on
+    /// Confirm: an unrecognised pad had seventeen buttons that all read as A,
+    /// which is worse than the silence `Other` was added to end. Returning
+    /// nothing forces the caller to say what it means instead.
+    fn index(self) -> Option<usize> {
+        Button::ALL.iter().position(|b| *b == self)
     }
 }
 
@@ -117,20 +125,51 @@ impl Axis {
     ];
 
     fn index(self) -> usize {
+        // Every variant is in ALL, and unlike `Button` there is no open-ended
+        // one that could fall through.
         Axis::ALL.iter().position(|a| *a == self).unwrap_or(0)
     }
 }
 
 /// The state of one abstract pad.
+///
+/// Two stores, because there are two kinds of button. The array is the
+/// abstract pad — a fixed set of positions, and the only thing a game or a
+/// menu should ever ask about. `others` is whatever the device itself
+/// reported and nothing has a name for; it is open-ended, so it cannot be an
+/// array, and mixing the two is what put every unmapped press on Confirm.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Pad {
     buttons: [bool; Button::ALL.len()],
+    /// Raw codes currently held. Small: a pad has a handful of buttons and
+    /// only the ones with no position land here, so a scan beats a hash.
+    others: Vec<u32>,
     axes: [f32; Axis::ALL.len()],
 }
 
 impl Pad {
     pub fn pressed(&self, button: Button) -> bool {
-        self.buttons[button.index()]
+        match button {
+            Button::Other(code) => self.others.contains(&code),
+            positioned => positioned.index().is_some_and(|seat| self.buttons[seat]),
+        }
+    }
+
+    /// Every button currently held, positioned and raw alike.
+    ///
+    /// For the one caller that legitimately wants "what is the person
+    /// pressing *right now*" rather than "is this particular button down":
+    /// a frontend walking somebody through naming their pad's buttons. That
+    /// screen cannot ask about a button by name, because finding out the name
+    /// is why it exists.
+    pub fn down(&self) -> Vec<Button> {
+        let mut out: Vec<Button> = Button::ALL
+            .iter()
+            .copied()
+            .filter(|b| self.pressed(*b))
+            .collect();
+        out.extend(self.others.iter().copied().map(Button::Other));
+        out
     }
 
     pub fn axis(&self, axis: Axis) -> f32 {
@@ -143,7 +182,9 @@ impl Pad {
     /// ADR-0006 decision 8's guard against a drifting stick auto-filling
     /// every binding.
     pub fn is_neutral(&self) -> bool {
-        !self.buttons.iter().any(|b| *b) && self.axes.iter().all(|a| a.abs() < f32::EPSILON)
+        !self.buttons.iter().any(|b| *b)
+            && self.others.is_empty()
+            && self.axes.iter().all(|a| a.abs() < f32::EPSILON)
     }
 }
 
@@ -185,7 +226,25 @@ impl Devices {
                 pressed,
             } => {
                 if let Some(pad) = self.pads.get_mut(&id) {
-                    pad.buttons[button.index()] = pressed;
+                    match button {
+                        Button::Other(code) => {
+                            pad.others.retain(|c| *c != code);
+                            if pressed {
+                                pad.others.push(code);
+                            }
+                        }
+                        // `index` is `Some` for every other variant, and the
+                        // `else` is unreachable rather than ignored — a new
+                        // open-ended variant added without a home here should
+                        // be loud, not silently dropped.
+                        positioned => match positioned.index() {
+                            Some(seat) => pad.buttons[seat] = pressed,
+                            None => tracing::error!(
+                                ?positioned,
+                                "a button with no seat and no raw code; dropped"
+                            ),
+                        },
+                    }
                 } else {
                     tracing::debug!(%id, ?button, "button for an unknown device, ignored");
                 }
@@ -387,5 +446,124 @@ mod tests {
         for a in Axis::ALL {
             assert!(seen.insert(a.index()), "{a:?} shares an index");
         }
+    }
+
+    /// An unmapped button must not read as Confirm.
+    ///
+    /// The regression this file was changed for. `Button::Other` was added so
+    /// an unrecognised pad emits something rather than nothing, and it was
+    /// then folded into the same array as the positioned buttons through an
+    /// `index()` that answered `0` for it — seat zero being `FaceSouth`. So
+    /// every button on an unrecognised pad set A, which is not a partial
+    /// mapping but a wrong one: a frontend asking somebody to press Start
+    /// would have been told they pressed A, and saved that.
+    #[test]
+    fn a_raw_button_does_not_land_on_face_south() {
+        let mut devices = Devices::new();
+        devices.apply(Event::Connected {
+            id: DeviceId(1),
+            info: DeviceInfo {
+                name: "unrecognised pad".into(),
+                model: ModelId([7; 16]),
+                mapping: MappingSource::None,
+            },
+        });
+
+        devices.apply(Event::Button {
+            id: DeviceId(1),
+            button: Button::Other(304),
+            pressed: true,
+        });
+
+        let pad = devices.pad(DeviceId(1)).expect("connected");
+        assert!(pad.pressed(Button::Other(304)), "the raw press was lost");
+        assert!(
+            !pad.pressed(Button::FaceSouth),
+            "an unmapped button was reported as A"
+        );
+        assert!(
+            !pad.is_neutral(),
+            "something is held and the pad says it is not"
+        );
+
+        // And a different code is a different button, not the same seat again.
+        assert!(!pad.pressed(Button::Other(305)));
+    }
+
+    /// Releasing a raw button releases that one.
+    #[test]
+    fn raw_buttons_release_independently() {
+        let mut devices = Devices::new();
+        devices.apply(Event::Connected {
+            id: DeviceId(1),
+            info: DeviceInfo {
+                name: "unrecognised pad".into(),
+                model: ModelId([7; 16]),
+                mapping: MappingSource::None,
+            },
+        });
+        for code in [304, 305, 306] {
+            devices.apply(Event::Button {
+                id: DeviceId(1),
+                button: Button::Other(code),
+                pressed: true,
+            });
+        }
+        devices.apply(Event::Button {
+            id: DeviceId(1),
+            button: Button::Other(305),
+            pressed: false,
+        });
+
+        let pad = devices.pad(DeviceId(1)).expect("connected");
+        assert!(pad.pressed(Button::Other(304)));
+        assert!(!pad.pressed(Button::Other(305)));
+        assert!(pad.pressed(Button::Other(306)));
+
+        // Held twice is held once. gilrs repeats a press across a
+        // reconnection and a pad that grew a button each time would report
+        // the same code as several.
+        devices.apply(Event::Button {
+            id: DeviceId(1),
+            button: Button::Other(304),
+            pressed: true,
+        });
+        let pad = devices.pad(DeviceId(1)).expect("connected");
+        assert_eq!(
+            pad.down()
+                .iter()
+                .filter(|b| **b == Button::Other(304))
+                .count(),
+            1
+        );
+    }
+
+    /// `down` is what a mapping walk reads, and it has to see both kinds.
+    #[test]
+    fn down_reports_positioned_and_raw_together() {
+        let mut devices = Devices::new();
+        devices.apply(Event::Connected {
+            id: DeviceId(1),
+            info: DeviceInfo {
+                name: "half-known pad".into(),
+                model: ModelId([9; 16]),
+                mapping: MappingSource::Sdl,
+            },
+        });
+        devices.apply(Event::Button {
+            id: DeviceId(1),
+            button: Button::Start,
+            pressed: true,
+        });
+        devices.apply(Event::Button {
+            id: DeviceId(1),
+            button: Button::Other(310),
+            pressed: true,
+        });
+
+        let down = devices.pad(DeviceId(1)).expect("connected").down();
+        assert_eq!(down.len(), 2, "{down:?}");
+        assert!(down.contains(&Button::Start));
+        assert!(down.contains(&Button::Other(310)));
     }
 }
