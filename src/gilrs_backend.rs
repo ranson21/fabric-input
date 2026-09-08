@@ -43,11 +43,50 @@ const HAT_THRESHOLD: f32 = 0.5;
 /// that is a different problem: no rule recovers a physical layout from a
 /// mistaken one, which is what ADR-0006 section 8's wizard exists for. Fixing
 /// the directions without pretending to fix the faces is the honest half.
+/// **The second entry is the N64 pad ADR-0043 opens with.** Spike I1 recorded
+/// "an N64 pad reported as an Ipega PG 9099"; the same house's pad still is,
+/// measured 2026-09-07 — `name="Ipega PG 9099"`, GUID
+/// `03000000632500007505000011010000`, `mapping=Sdl`. The bundled entry is not
+/// merely the wrong *name*. Through it, a person pressing the ten buttons in
+/// order gets: Start as `Guide`, A as `FaceEast`, B as `FaceSouth`, and the
+/// four C buttons scattered over `Start`, `FaceNorth`, `FaceWest` and
+/// `Select`. Three of ten land where a frontend would look for them.
+///
+/// The physical pad, read from the kernel rather than assumed — every button
+/// pressed once, in a known order, against `/dev/input/event*`:
+///
+/// ```text
+///   A  BTN_EAST b1      C-Up    BTN_TR2   b9     Z      BTN_TL b6
+///   B  BTN_C    b2      C-Down  BTN_SOUTH b0     L      BTN_WEST b4
+///   Start BTN_MODE b12  C-Left  BTN_NORTH b3     R      BTN_Z  b5
+///   d-pad hat h0        C-Right BTN_TL2   b8     stick  a0/a1
+/// ```
+///
+/// **The four C buttons are mapped as buttons, not as a right stick, and that
+/// was measured too.** A C cluster is a direction cluster and the obvious
+/// mapping is `+rightx`/`-rightx`/`+righty`/`-righty`. gilrs drops half of it,
+/// exactly as the Saturn note above describes for the d-pad: holding each in
+/// turn produced 44 ticks of `RightY = +1.00` and 36 of `RightX = +1.00`, and
+/// **nothing whatsoever** from the two negative halves. Two of four buttons
+/// would not exist.
+///
+/// So they take four ordinary positions, and that is a deliberate compromise
+/// rather than a claim about the pad's shape: an N64 controller has ten
+/// buttons, the standard vocabulary has no C cluster in it, and the shoulders
+/// are the only four-of-a-kind left once the faces are spent. A C button
+/// nobody can press is worse than an L button in an unexpected place, and a
+/// frontend that maps positionally reaches all ten this way.
 const MAPPING_OVERRIDES: &str = "\
 03000000790000001100000011010000,Sega Saturn,\
 a:b1,b:b2,x:b0,y:b3,\
 leftshoulder:b6,lefttrigger:b7,rightshoulder:b5,righttrigger:b4,\
-back:b8,start:b9,leftx:a0,lefty:a1,platform:Linux,";
+back:b8,start:b9,leftx:a0,lefty:a1,platform:Linux,\n\
+03000000632500007505000011010000,Nintendo 64,\
+a:b1,b:b0,x:b2,y:b9,\
+back:b4,start:b12,\
+leftshoulder:b3,rightshoulder:b8,lefttrigger:b6,righttrigger:b5,\
+dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,\
+leftx:a0,lefty:a1,platform:Linux,";
 
 /// Applies [`MAPPING_OVERRIDES`], by the only route that actually wins.
 ///
