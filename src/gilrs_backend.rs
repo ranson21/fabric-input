@@ -21,6 +21,35 @@ use crate::source::{Event, EventSource};
 /// reached by any real press, since hats report full deflection or nothing.
 const HAT_THRESHOLD: f32 = 0.5;
 
+/// The two evdev axes a Bluetooth pad's triggers arrive on, as gilrs
+/// encodes an event code: `(EV_ABS << 16) | ABS_GAS` and `| ABS_BRAKE`.
+///
+/// Measured on an Xbox Wireless Controller over Bluetooth (`hid-microsoft`,
+/// 2026-09-13): the pad exposes `ABS_X ABS_Y ABS_Z ABS_RZ ABS_GAS ABS_BRAKE
+/// HAT0X HAT0Y`, gilrs takes the kernel driver's own mapping for it, and that
+/// mapping knows `ABS_HAT2X`/`ABS_HAT2Y` as the second triggers (the `xpad`
+/// convention) but not `ABS_GAS`/`ABS_BRAKE` (the HID gamepad convention).
+/// So both triggers reached this crate as `Axis::Unknown` and were dropped,
+/// and a setup walk asking for L2 heard nothing however hard it was pulled.
+///
+/// `ABS_GAS` is the right trigger and `ABS_BRAKE` the left, per the HID
+/// usage tables and the kernel's `hid-input.c`. Rest is `-1.0`, a full pull
+/// is `+1.0`.
+const EV_ABS_GAS: u32 = (3 << 16) | 9;
+const EV_ABS_BRAKE: u32 = (3 << 16) | 10;
+
+/// Whether a trigger reported at `value` counts as pressed, given whether it
+/// was before. Pressed from half travel, released only when most of the way
+/// back — a resting trigger jitters around `-1.0` and a held one around
+/// `+1.0`, and neither may flicker.
+pub(crate) fn trigger_pressed(was: bool, value: f32) -> bool {
+    if was {
+        value > -0.5
+    } else {
+        value >= 0.0
+    }
+}
+
 /// Corrected SDL mappings for pads the bundled database gets wrong.
 ///
 /// One entry so far. A generic DragonRise board (USB `0079:0011`), sold in
@@ -125,6 +154,8 @@ pub struct GilrsSource {
     pending: VecDeque<Event>,
     /// Last hat position per device, so only genuine changes are emitted.
     hats: HashMap<(DeviceId, bool), i8>,
+    /// Whether each synthesized trigger button is down — see [`EV_ABS_GAS`].
+    triggers: HashMap<(DeviceId, Axis), bool>,
 }
 
 impl GilrsSource {
@@ -137,6 +168,7 @@ impl GilrsSource {
             next_id: 0,
             pending: VecDeque::new(),
             hats: HashMap::new(),
+            triggers: HashMap::new(),
         };
         // Devices already attached at start-up never produce a Connected
         // event, so without this they would be invisible until unplugged.
@@ -208,6 +240,30 @@ impl GilrsSource {
     }
 }
 
+impl GilrsSource {
+    /// A trigger that gilrs delivers only as an axis becomes a button too, the
+    /// way a hat axis becomes a D-pad — the abstract pad promises both, and a
+    /// consumer asking "was L2 pressed" must not have to know which bus the
+    /// pad is on. The axis event is still emitted; a game reads the travel.
+    fn trigger(&mut self, id: DeviceId, axis: Axis, value: f32) {
+        let was = self.triggers.get(&(id, axis)).copied().unwrap_or(false);
+        let now = trigger_pressed(was, value);
+        self.triggers.insert((id, axis), now);
+        if was == now {
+            return;
+        }
+        let button = match axis {
+            Axis::TriggerLeft => Button::TriggerLeft,
+            _ => Button::TriggerRight,
+        };
+        self.pending.push_back(Event::Button {
+            id,
+            button,
+            pressed: now,
+        });
+    }
+}
+
 impl EventSource for GilrsSource {
     fn poll(&mut self) -> Option<Event> {
         loop {
@@ -242,9 +298,26 @@ impl EventSource for GilrsSource {
                         pressed: false,
                     });
                 }
-                gilrs::EventType::AxisChanged(a, value, _) => match a {
+                gilrs::EventType::AxisChanged(a, value, code) => match a {
                     gilrs::Axis::DPadX => self.hat(id, true, value),
                     gilrs::Axis::DPadY => self.hat(id, false, value),
+                    // The HID gamepad triggers, which gilrs does not know.
+                    gilrs::Axis::Unknown if code.into_u32() == EV_ABS_BRAKE => {
+                        self.pending.push_back(Event::Axis {
+                            id,
+                            axis: Axis::TriggerLeft,
+                            value,
+                        });
+                        self.trigger(id, Axis::TriggerLeft, value);
+                    }
+                    gilrs::Axis::Unknown if code.into_u32() == EV_ABS_GAS => {
+                        self.pending.push_back(Event::Axis {
+                            id,
+                            axis: Axis::TriggerRight,
+                            value,
+                        });
+                        self.trigger(id, Axis::TriggerRight, value);
+                    }
                     other => {
                         if let Some(axis) = axis(other) {
                             self.pending.push_back(Event::Axis { id, axis, value });
@@ -317,6 +390,35 @@ fn axis(a: gilrs::Axis) -> Option<Axis> {
         // Handled by the hat path before this is reached.
         G::DPadX | G::DPadY | G::Unknown => return None,
     })
+}
+
+#[cfg(test)]
+mod triggers {
+    use super::*;
+
+    #[test]
+    fn a_trigger_presses_at_half_travel_and_releases_most_of_the_way_back() {
+        // At rest, nothing.
+        assert!(!trigger_pressed(false, -1.0));
+        assert!(!trigger_pressed(false, -0.998));
+        // Partway in is not a press; half travel is.
+        assert!(!trigger_pressed(false, -0.3));
+        assert!(trigger_pressed(false, 0.0));
+        assert!(trigger_pressed(false, 1.0));
+        // Held: easing off a little does not release.
+        assert!(trigger_pressed(true, 0.5));
+        assert!(trigger_pressed(true, -0.4));
+        // Most of the way back does.
+        assert!(!trigger_pressed(true, -0.6));
+        assert!(!trigger_pressed(true, -1.0));
+    }
+
+    #[test]
+    fn the_evdev_codes_are_the_ones_gilrs_prints() {
+        // gilrs prints these as `ABS(9)` and `ABS(10)`, EV_ABS being 3.
+        assert_eq!(EV_ABS_GAS, 0x0003_0009);
+        assert_eq!(EV_ABS_BRAKE, 0x0003_000a);
+    }
 }
 
 #[cfg(test)]
