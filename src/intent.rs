@@ -36,6 +36,20 @@ pub enum Intent {
     Back,
     TabPrev,
     TabNext,
+    /// The third and fourth face buttons: west and north.
+    ///
+    /// **Positions, not jobs.** What a third face *does* is the consumer's
+    /// to say — Apex opens the options of the thing under the cursor with
+    /// one and search with the other — and this crate must not carry one
+    /// consumer's vocabulary (see the module docs). A consumer with no use
+    /// for them ignores them.
+    ///
+    /// Unlike confirm these need no second position. The two layouts that
+    /// disagree about south and east disagree about west and north too, but
+    /// only as to which *letter* is printed there, and nothing here reads
+    /// the letter.
+    Third,
+    Fourth,
 }
 
 impl Intent {
@@ -57,6 +71,8 @@ impl Intent {
             Intent::Back => "back",
             Intent::TabPrev => "tab_prev",
             Intent::TabNext => "tab_next",
+            Intent::Third => "third",
+            Intent::Fourth => "fourth",
         }
     }
 }
@@ -200,13 +216,15 @@ impl Intents {
 /// move along it, on every pad, including one with no shoulders at all.
 /// Binding the triggers as well widens the coverage without making any pad
 /// worse.
-const BUTTONS: [(Button, Intent); 11] = [
+const BUTTONS: [(Button, Intent); 13] = [
     (Button::DpadUp, Intent::Up),
     (Button::DpadDown, Intent::Down),
     (Button::DpadLeft, Intent::Left),
     (Button::DpadRight, Intent::Right),
     (Button::FaceSouth, Intent::Select),
     (Button::FaceEast, Intent::Select),
+    (Button::FaceWest, Intent::Third),
+    (Button::FaceNorth, Intent::Fourth),
     (Button::Select, Intent::Back),
     (Button::ShoulderLeft, Intent::TabPrev),
     (Button::ShoulderRight, Intent::TabNext),
@@ -281,6 +299,23 @@ mod tests {
                 "{button:?} should confirm"
             );
         }
+    }
+
+    #[test]
+    fn the_other_two_faces_are_the_third_and_the_fourth() {
+        for (button, intent) in [
+            (Button::FaceWest, Intent::Third),
+            (Button::FaceNorth, Intent::Fourth),
+        ] {
+            let mut d = devices();
+            let mut i = Intents::new();
+            press(&mut d, button, true);
+            assert_eq!(i.update(d.pad(DeviceId(0)).unwrap()), vec![intent]);
+            // Held: once, like every other button.
+            assert!(i.update(d.pad(DeviceId(0)).unwrap()).is_empty());
+        }
+        assert_eq!(Intent::Third.as_name(), "third");
+        assert_eq!(Intent::Fourth.as_name(), "fourth");
     }
 
     #[test]
